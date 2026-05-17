@@ -44,6 +44,9 @@ enum SubCommands {
         /// Include all possible display paths (implies --include-inactive)
         #[structopt(long)]
         include_all: bool,
+        /// Include displays that are not available (e.g. no monitor connected)
+        #[structopt(long)]
+        include_unavailable: bool,
     },
     /// Sets the primary display
     #[structopt(alias = "sp")]
@@ -146,6 +149,7 @@ fn main() -> Result<()> {
             id,
             #[cfg(feature = "json")]
             json,
+            include_unavailable,
             ..
         } => {
             #[cfg(feature = "json")]
@@ -172,6 +176,7 @@ fn main() -> Result<()> {
                             // List all displays
                             let displays_json: Vec<json::DisplayInfoJson> = display_set
                                 .displays()
+                                .filter(|d| include_unavailable || d.target_available())
                                 .map(|d| json::display_to_json(&d))
                                 .collect();
                             println!("{}", serde_json::to_string_pretty(&displays_json)?);
@@ -217,7 +222,7 @@ fn main() -> Result<()> {
                         // List all displays
                         println!("All Displays:");
                         println!();
-                        for display in display_set.displays() {
+                        for display in display_set.displays().filter(|d| include_unavailable || d.target_available()) {
                             println!("Display ID: {}", display.index());
                             // Windows display number corresponds to the number shown in Windows Settings (Display ID + 1)
                             println!("Windows Display Number: {}", display.index() + 1);
