@@ -5,7 +5,8 @@ use std::cell::RefMut;
 
 use color_eyre::eyre::{Result, eyre};
 use displayz::{
-    DisplaySettings, Frequency, Orientation, Position, Resolution, query_displays, refresh,
+    DisplaySettings, Frequency, Orientation, Position, Resolution, query_displays, query_topology,
+    refresh,
 };
 use windows::Win32::Devices::Display::{QDC_ALL_PATHS, QDC_ONLY_ACTIVE_PATHS};
 use structopt::{StructOpt, clap::ArgGroup};
@@ -61,6 +62,12 @@ enum SubCommands {
         #[structopt(flatten)]
         properties: PropertiesOpt,
     },
+    /// Manage display topology
+    #[structopt(alias = "t")]
+    Topology {
+        #[structopt(subcommand)]
+        cmd: TopologySubCommands,
+    },
     /// Changes settings of a display with a specified id
     #[structopt(alias = "props")]
     Properties {
@@ -70,6 +77,21 @@ enum SubCommands {
         /// The properties to change
         #[structopt(flatten)]
         properties: PropertiesOpt,
+    },
+}
+
+/// Subcommands for topology management
+#[derive(StructOpt, Debug)]
+enum TopologySubCommands {
+    /// Show the current topology
+    #[structopt(alias = "s")]
+    Show,
+    /// Watch for topology changes and print them as they occur
+    #[structopt(alias = "w")]
+    Watch {
+        /// Poll interval in milliseconds
+        #[structopt(short, long, default_value = "500")]
+        interval: u64,
     },
 }
 
@@ -295,6 +317,24 @@ fn main() -> Result<()> {
             refresh()?;
             log::info!("Display settings changed");
         }
+        SubCommands::Topology { cmd } => match cmd {
+            TopologySubCommands::Show => {
+                let topology = query_topology()?;
+                println!("Topology: {}", topology);
+            }
+            TopologySubCommands::Watch { interval } => {
+                let mut last = query_topology()?;
+                println!("Topology: {}", last);
+                loop {
+                    std::thread::sleep(std::time::Duration::from_millis(interval));
+                    let current = query_topology()?;
+                    if current != last {
+                        println!("Topology: {}", current);
+                        last = current;
+                    }
+                }
+            }
+        },
     }
 
     Ok(())

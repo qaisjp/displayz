@@ -4,10 +4,12 @@ use std::collections::HashMap;
 
 use thiserror::Error;
 use windows::Win32::Devices::Display::{
-    DISPLAYCONFIG_MODE_INFO, DISPLAYCONFIG_PATH_INFO, DISPLAYCONFIG_TOPOLOGY_ID,
-    GetDisplayConfigBufferSizes, QDC_DATABASE_CURRENT, QDC_ONLY_ACTIVE_PATHS,
-    QUERY_DISPLAY_CONFIG_FLAGS, QueryDisplayConfig, SDC_ALLOW_CHANGES, SDC_APPLY,
-    SDC_SAVE_TO_DATABASE, SDC_USE_SUPPLIED_DISPLAY_CONFIG, SetDisplayConfig,
+    DISPLAYCONFIG_MODE_INFO, DISPLAYCONFIG_PATH_INFO, DISPLAYCONFIG_TOPOLOGY_CLONE,
+    DISPLAYCONFIG_TOPOLOGY_EXTEND, DISPLAYCONFIG_TOPOLOGY_EXTERNAL,
+    DISPLAYCONFIG_TOPOLOGY_ID, DISPLAYCONFIG_TOPOLOGY_INTERNAL, GetDisplayConfigBufferSizes,
+    QDC_DATABASE_CURRENT, QDC_ONLY_ACTIVE_PATHS, QUERY_DISPLAY_CONFIG_FLAGS, QueryDisplayConfig,
+    SDC_ALLOW_CHANGES, SDC_APPLY, SDC_SAVE_TO_DATABASE, SDC_USE_SUPPLIED_DISPLAY_CONFIG,
+    SetDisplayConfig,
 };
 
 use crate::{
@@ -455,4 +457,43 @@ pub fn refresh() -> Result {
     }
 
     Ok(())
+}
+
+/// Returns the current display topology from the Windows topology database.
+pub fn query_topology() -> Result<crate::Topology> {
+    let mut num_paths: u32 = 0;
+    let mut num_modes: u32 = 0;
+
+    unsafe {
+        GetDisplayConfigBufferSizes(QDC_DATABASE_CURRENT, &mut num_paths, &mut num_modes)
+            .ok()
+            .map_err(|e| {
+                DisplayError::WinAPI(format!("GetDisplayConfigBufferSizes failed: {:?}", e))
+            })?;
+    }
+
+    let mut paths = vec![DISPLAYCONFIG_PATH_INFO::default(); num_paths as usize];
+    let mut modes = vec![DISPLAYCONFIG_MODE_INFO::default(); num_modes as usize];
+    let mut topology_id = DISPLAYCONFIG_TOPOLOGY_ID::default();
+
+    unsafe {
+        QueryDisplayConfig(
+            QDC_DATABASE_CURRENT,
+            &mut num_paths,
+            paths.as_mut_ptr(),
+            &mut num_modes,
+            modes.as_mut_ptr(),
+            Some(&mut topology_id as *mut DISPLAYCONFIG_TOPOLOGY_ID),
+        )
+        .ok()
+        .map_err(|e| DisplayError::WinAPI(format!("QueryDisplayConfig failed: {:?}", e)))?;
+    }
+
+    Ok(match topology_id {
+        DISPLAYCONFIG_TOPOLOGY_INTERNAL => crate::Topology::Internal,
+        DISPLAYCONFIG_TOPOLOGY_CLONE    => crate::Topology::Clone,
+        DISPLAYCONFIG_TOPOLOGY_EXTEND   => crate::Topology::Extend,
+        DISPLAYCONFIG_TOPOLOGY_EXTERNAL => crate::Topology::External,
+        DISPLAYCONFIG_TOPOLOGY_ID(v)    => crate::Topology::Unknown(v),
+    })
 }

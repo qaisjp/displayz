@@ -425,3 +425,25 @@ impl fmt::Display for ConnectorType {
         }
     }
 }
+
+/// The active display topology
+#[derive(PartialEq)]
+pub enum Topology {
+    Internal,
+    Clone,
+    Extend,
+    External,
+    Unknown(i32),
+}
+
+impl fmt::Display for Topology {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Topology::Internal    => write!(f, "Internal"),
+            Topology::Clone       => write!(f, "Clone"),
+            Topology::Extend      => write!(f, "Extend"),
+            Topology::External    => write!(f, "External"),
+            Topology::Unknown(v)  => write!(f, "Unknown({})", v),
+        }
+    }
+}
