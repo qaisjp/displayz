@@ -8,7 +8,8 @@ use windows::Win32::Devices::Display::{
     DISPLAYCONFIG_TOPOLOGY_EXTEND, DISPLAYCONFIG_TOPOLOGY_EXTERNAL,
     DISPLAYCONFIG_TOPOLOGY_ID, DISPLAYCONFIG_TOPOLOGY_INTERNAL, GetDisplayConfigBufferSizes,
     QDC_DATABASE_CURRENT, QDC_ONLY_ACTIVE_PATHS, QUERY_DISPLAY_CONFIG_FLAGS, QueryDisplayConfig,
-    SDC_ALLOW_CHANGES, SDC_APPLY, SDC_SAVE_TO_DATABASE, SDC_USE_SUPPLIED_DISPLAY_CONFIG,
+    SDC_ALLOW_CHANGES, SDC_APPLY, SDC_SAVE_TO_DATABASE, SDC_TOPOLOGY_CLONE, SDC_TOPOLOGY_EXTEND,
+    SDC_TOPOLOGY_EXTERNAL, SDC_TOPOLOGY_INTERNAL, SDC_USE_SUPPLIED_DISPLAY_CONFIG, SDC_VALIDATE,
     SetDisplayConfig,
 };
 
@@ -496,4 +497,110 @@ pub fn query_topology() -> Result<crate::Topology> {
         DISPLAYCONFIG_TOPOLOGY_EXTERNAL => crate::Topology::External,
         DISPLAYCONFIG_TOPOLOGY_ID(v)    => crate::Topology::Unknown(v),
     })
+}
+
+/// Probes which topology modes Windows can switch to for the current display set.
+/// Uses SetDisplayConfig with SDC_VALIDATE (dry-run) for each topology type.
+/// Returns a list of (Topology, is_current) pairs.
+pub fn query_stored_topologies() -> Result<Vec<(crate::Topology, bool)>> {
+    let current = query_topology()?;
+    let candidates = [
+        (SDC_TOPOLOGY_INTERNAL, crate::Topology::Internal),
+        (SDC_TOPOLOGY_CLONE,    crate::Topology::Clone),
+        (SDC_TOPOLOGY_EXTEND,   crate::Topology::Extend),
+        (SDC_TOPOLOGY_EXTERNAL, crate::Topology::External),
+    ];
+    let mut result = Vec::new();
+    for (flag, topology) in candidates {
+        let ret = unsafe { SetDisplayConfig(None, None, flag | SDC_VALIDATE) };
+        if ret == 0 {
+            let is_current = topology == current;
+            result.push((topology, is_current));
+        }
+    }
+    Ok(result)
+}
+
+/// A stored display configuration entry from the Windows Connectivity database.
+/// Windows remembers one "recent" topology per physical display set and applies
+/// it automatically when that set of monitors is detected.
+pub struct ConnectivityEntry {
+    /// The display set identifier (monitor IDs joined with `^`)
+    pub set_id: String,
+    /// The configuration key Windows will apply next time this display set connects
+    pub recent: Option<String>,
+    /// Stored configuration key for Internal (primary-only) topology
+    pub internal: Option<String>,
+    /// Stored configuration key for External (secondary-only) topology
+    pub external: Option<String>,
+    /// Stored configuration key for Extend topology
+    pub extend: Option<String>,
+    /// Stored configuration key for Clone topology
+    pub clone: Option<String>,
+}
+
+impl ConnectivityEntry {
+    /// Returns the topology name that will be applied on next connect, if determinable.
+    pub fn recent_topology(&self) -> Option<&str> {
+        let recent = self.recent.as_deref()?;
+        if self.internal.as_deref() == Some(recent) { return Some("Internal"); }
+        if self.external.as_deref() == Some(recent) { return Some("External"); }
+        if self.extend.as_deref() == Some(recent)   { return Some("Extend"); }
+        if self.clone.as_deref()   == Some(recent)  { return Some("Clone"); }
+        None
+    }
+
+    /// Returns names of all topology types that have stored configurations.
+    pub fn available_topologies(&self) -> Vec<&str> {
+        let mut v = Vec::new();
+        if self.internal.is_some() { v.push("Internal"); }
+        if self.external.is_some() { v.push("External"); }
+        if self.extend.is_some()   { v.push("Extend"); }
+        if self.clone.is_some()    { v.push("Clone"); }
+        v
+    }
+
+    /// Extracts model-code prefixes for each monitor in this display set.
+    /// E.g. "DEL430F6C19C34_34_07E8_46^SNY07CB..." → ["DEL430F", "SNY07CB"].
+    pub fn monitor_prefixes(&self) -> Vec<&str> {
+        self.set_id.split('^').filter_map(|id| {
+            let end = id.find('_').unwrap_or(id.len());
+            if end == 0 { None } else { Some(&id[..end]) }
+        }).collect()
+    }
+}
+
+/// Reads all entries from the Windows display Connectivity database.
+/// Requires admin rights (HKLM key is protected).
+pub fn read_connectivity_database() -> Result<Vec<ConnectivityEntry>> {
+    use winreg::RegKey;
+    use winreg::enums::HKEY_LOCAL_MACHINE;
+
+    let hklm = RegKey::predef(HKEY_LOCAL_MACHINE);
+    let connectivity = hklm
+        .open_subkey(r"SYSTEM\CurrentControlSet\Control\GraphicsDrivers\Connectivity")
+        .map_err(|e| DisplayError::WinAPI(
+            format!("Cannot open Connectivity key (run as administrator): {}", e)
+        ))?;
+
+    let mut entries = Vec::new();
+    for key_result in connectivity.enum_keys() {
+        let key_name = key_result
+            .map_err(|e| DisplayError::WinAPI(e.to_string()))?;
+        let sub = connectivity
+            .open_subkey(&key_name)
+            .map_err(|e| DisplayError::WinAPI(e.to_string()))?;
+
+        let set_id: String = sub.get_value("SetId").unwrap_or_default();
+        entries.push(ConnectivityEntry {
+            set_id,
+            recent:   sub.get_value("Recent").ok(),
+            internal: sub.get_value("Internal").ok(),
+            external: sub.get_value("External").ok(),
+            extend:   sub.get_value("eXtend").ok(),
+            clone:    sub.get_value("Clone").ok(),
+        });
+    }
+
+    Ok(entries)
 }

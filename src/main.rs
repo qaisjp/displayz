@@ -5,9 +5,10 @@ use std::cell::RefMut;
 
 use color_eyre::eyre::{Result, eyre};
 use displayz::{
-    DisplaySettings, Frequency, Orientation, Position, Resolution, query_displays, query_topology,
-    refresh,
+    DisplaySettings, Frequency, Orientation, Position, Resolution, query_displays,
+    query_stored_topologies, query_topology, read_connectivity_database, refresh,
 };
+use std::time::{SystemTime, UNIX_EPOCH};
 use windows::Win32::Devices::Display::{QDC_ALL_PATHS, QDC_ONLY_ACTIVE_PATHS};
 use structopt::{StructOpt, clap::ArgGroup};
 
@@ -93,6 +94,23 @@ enum TopologySubCommands {
         #[structopt(short, long, default_value = "500")]
         interval: u64,
     },
+    /// Show which topology modes are stored for the current display set
+    #[structopt(alias = "st")]
+    Stored,
+    /// Show the full Windows display Connectivity database (requires admin)
+    #[structopt(alias = "c")]
+    Connectivity,
+}
+
+fn format_time() -> String {
+    let secs = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let s = secs % 60;
+    let m = (secs / 60) % 60;
+    let h = (secs / 3600) % 24;
+    format!("{:02}:{:02}:{:02}", h, m, s)
 }
 
 /// Describes the properties that can be changed on a display
@@ -324,14 +342,76 @@ fn main() -> Result<()> {
             }
             TopologySubCommands::Watch { interval } => {
                 let mut last = query_topology()?;
-                println!("Topology: {}", last);
+                println!("[{}] Topology: {}", format_time(), last);
                 loop {
                     std::thread::sleep(std::time::Duration::from_millis(interval));
                     let current = query_topology()?;
                     if current != last {
-                        println!("Topology: {}", current);
+                        println!("[{}] Topology: {}", format_time(), current);
                         last = current;
                     }
+                }
+            }
+            TopologySubCommands::Stored => {
+                let topologies = query_stored_topologies()?;
+                if topologies.is_empty() {
+                    println!("No stored topologies found for the current display set.");
+                } else {
+                    println!("Stored topologies for current display set:");
+                    for (topology, is_current) in topologies {
+                        if is_current {
+                            println!("  * {} (current)", topology);
+                        } else {
+                            println!("    {}", topology);
+                        }
+                    }
+                }
+            }
+            TopologySubCommands::Connectivity => {
+                // Get current monitor prefixes to identify the active display set
+                let all_displays = query_displays(
+                    windows::Win32::Devices::Display::QDC_ALL_PATHS,
+                    true,
+                )?;
+                let current_prefixes: Vec<String> = all_displays
+                    .displays()
+                    .filter_map(|d| {
+                        // key looks like \\?\DISPLAY#DEL430F#...  extract the model code
+                        let key = d.key();
+                        let after_display = key.split('#').nth(1)?;
+                        Some(after_display.to_string())
+                    })
+                    .collect();
+
+                let entries = read_connectivity_database()?;
+                let mut shown = false;
+                for entry in &entries {
+                    // Only show entries that have at least one topology stored
+                    if entry.available_topologies().is_empty() {
+                        continue;
+                    }
+                    shown = true;
+
+                    // Check whether this entry belongs to the current display set
+                    let prefixes = entry.monitor_prefixes();
+                    let is_current = prefixes.len() == current_prefixes.len()
+                        && prefixes.iter().all(|p| {
+                            current_prefixes.iter().any(|c| c.starts_with(p) || p.starts_with(c.as_str()))
+                        });
+
+                    let marker = if is_current { " [current set]" } else { "" };
+                    println!("Display set:{}", marker);
+                    println!("  Monitors:   {}", entry.set_id);
+
+                    let remembered = entry
+                        .recent_topology()
+                        .unwrap_or("Unknown");
+                    println!("  Remembered: {}", remembered);
+                    println!("  Available:  {}", entry.available_topologies().join(", "));
+                    println!();
+                }
+                if !shown {
+                    println!("No connectivity entries found (try running as administrator).");
                 }
             }
         },
