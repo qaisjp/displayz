@@ -409,23 +409,33 @@ fn main() -> Result<()> {
                     })
                     .collect();
 
-                let (entries, orphaned_configs) = read_connectivity_database()?;
+                let is_current = |entry: &displayz::ConnectivityEntry| {
+                    let prefixes = entry.monitor_prefixes();
+                    prefixes.len() == current_prefixes.len()
+                        && prefixes.iter().all(|p| {
+                            current_prefixes.iter().any(|c| c.starts_with(p) || p.starts_with(c.as_str()))
+                        })
+                };
+
+                let max_ts = |e: &displayz::ConnectivityEntry| {
+                    [e.internal_timestamp, e.external_timestamp, e.extend_timestamp, e.clone_timestamp]
+                        .into_iter().flatten().max().unwrap_or(0)
+                };
+
+                let (mut entries, orphaned_configs) = read_connectivity_database()?;
                 if entries.is_empty() {
                     println!("No connectivity entries found (try running as administrator).");
                 }
+                entries.sort_by(|a, b| {
+                    is_current(b).cmp(&is_current(a)).then(max_ts(b).cmp(&max_ts(a)))
+                });
                 for entry in &entries {
                     if !include_empty && entry.available_topologies().is_empty() {
                         continue;
                     }
 
-                    // Check whether this entry belongs to the current display set
-                    let prefixes = entry.monitor_prefixes();
-                    let is_current = prefixes.len() == current_prefixes.len()
-                        && prefixes.iter().all(|p| {
-                            current_prefixes.iter().any(|c| c.starts_with(p) || p.starts_with(c.as_str()))
-                        });
-
-                    let marker = if is_current { " [current set]" } else { "" };
+                    let current = is_current(entry);
+                    let marker = if current { " [current set]" } else { "" };
                     println!("Display set:{}", marker);
                     println!("  Monitors:   {}", entry.set_id);
                     println!("  Full key:   {}", entry.key_name);
