@@ -525,6 +525,8 @@ pub fn query_stored_topologies() -> Result<Vec<(crate::Topology, bool)>> {
 /// Windows remembers one "recent" topology per physical display set and applies
 /// it automatically when that set of monitors is detected.
 pub struct ConnectivityEntry {
+    /// Full registry key name including the hash suffix (`<SetId>^<Hash>`)
+    pub key_name: String,
     /// The display set identifier (monitor IDs joined with `^`)
     pub set_id: String,
     /// The configuration key Windows will apply next time this display set connects
@@ -537,6 +539,11 @@ pub struct ConnectivityEntry {
     pub extend: Option<String>,
     /// Stored configuration key for Clone topology
     pub clone: Option<String>,
+    /// Windows FILETIME timestamp for each topology's last-saved configuration
+    pub internal_timestamp: Option<u64>,
+    pub external_timestamp: Option<u64>,
+    pub extend_timestamp: Option<u64>,
+    pub clone_timestamp: Option<u64>,
 }
 
 impl ConnectivityEntry {
@@ -568,13 +575,70 @@ impl ConnectivityEntry {
             if end == 0 { None } else { Some(&id[..end]) }
         }).collect()
     }
+
+    /// Returns true if at least one topology's config ID was found in the Configuration key.
+    pub fn has_any_configuration_key(&self) -> bool {
+        self.internal_timestamp.is_some()
+            || self.external_timestamp.is_some()
+            || self.extend_timestamp.is_some()
+            || self.clone_timestamp.is_some()
+    }
 }
 
-/// Reads all entries from the Windows display Connectivity database.
-/// Requires admin rights (HKLM key is protected).
-pub fn read_connectivity_database() -> Result<Vec<ConnectivityEntry>> {
+/// A Configuration registry entry with no matching Connectivity reference.
+pub struct OrphanedConfigEntry {
+    /// Full registry key name including the hash suffix (`<ConfigId>^<Hash>`)
+    pub key_name: String,
+    /// The configuration ID prefix (before the hash)
+    pub config_id: String,
+    /// Windows FILETIME timestamp
+    pub timestamp: u64,
+}
+
+/// Reads all Configuration registry entries as config_id → (full_key_name, timestamp).
+fn read_config_entries() -> HashMap<String, (String, u64)> {
     use winreg::RegKey;
     use winreg::enums::HKEY_LOCAL_MACHINE;
+
+    let mut map = HashMap::new();
+    let hklm = RegKey::predef(HKEY_LOCAL_MACHINE);
+    let config_key = match hklm
+        .open_subkey(r"SYSTEM\CurrentControlSet\Control\GraphicsDrivers\Configuration")
+    {
+        Ok(k) => k,
+        Err(_) => return map,
+    };
+
+    for key_result in config_key.enum_keys() {
+        let key_name = match key_result {
+            Ok(k) => k,
+            Err(_) => continue,
+        };
+        // Key names are "<ConfigId>^<Hash>" — extract the ConfigId prefix
+        let config_id = match key_name.find('^') {
+            Some(pos) => key_name[..pos].to_string(),
+            None => key_name.clone(),
+        };
+        let sub = match config_key.open_subkey(&key_name) {
+            Ok(s) => s,
+            Err(_) => continue,
+        };
+        if let Ok(ts) = sub.get_value::<u64, _>("Timestamp") {
+            map.insert(config_id, (key_name, ts));
+        }
+    }
+
+    map
+}
+
+/// Reads all entries from the Windows display Connectivity database and cross-references
+/// them against the Configuration key to find orphaned entries on either side.
+/// Requires admin rights (HKLM key is protected).
+pub fn read_connectivity_database() -> Result<(Vec<ConnectivityEntry>, Vec<OrphanedConfigEntry>)> {
+    use winreg::RegKey;
+    use winreg::enums::HKEY_LOCAL_MACHINE;
+
+    let config_entries = read_config_entries();
 
     let hklm = RegKey::predef(HKEY_LOCAL_MACHINE);
     let connectivity = hklm
@@ -584,6 +648,8 @@ pub fn read_connectivity_database() -> Result<Vec<ConnectivityEntry>> {
         ))?;
 
     let mut entries = Vec::new();
+    let mut referenced_config_ids = std::collections::HashSet::new();
+
     for key_result in connectivity.enum_keys() {
         let key_name = key_result
             .map_err(|e| DisplayError::WinAPI(e.to_string()))?;
@@ -592,15 +658,41 @@ pub fn read_connectivity_database() -> Result<Vec<ConnectivityEntry>> {
             .map_err(|e| DisplayError::WinAPI(e.to_string()))?;
 
         let set_id: String = sub.get_value("SetId").unwrap_or_default();
+        let internal: Option<String> = sub.get_value("Internal").ok();
+        let external: Option<String> = sub.get_value("External").ok();
+        let extend:   Option<String> = sub.get_value("eXtend").ok();
+        let clone:    Option<String> = sub.get_value("Clone").ok();
+
+        for id in [&internal, &external, &extend, &clone].iter().filter_map(|o| o.as_deref()) {
+            referenced_config_ids.insert(id.to_string());
+        }
+
+        let internal_timestamp = internal.as_deref().and_then(|id| config_entries.get(id).map(|(_, ts)| *ts));
+        let external_timestamp = external.as_deref().and_then(|id| config_entries.get(id).map(|(_, ts)| *ts));
+        let extend_timestamp   = extend.as_deref().and_then(|id| config_entries.get(id).map(|(_, ts)| *ts));
+        let clone_timestamp    = clone.as_deref().and_then(|id| config_entries.get(id).map(|(_, ts)| *ts));
+
         entries.push(ConnectivityEntry {
+            key_name: key_name.clone(),
             set_id,
-            recent:   sub.get_value("Recent").ok(),
-            internal: sub.get_value("Internal").ok(),
-            external: sub.get_value("External").ok(),
-            extend:   sub.get_value("eXtend").ok(),
-            clone:    sub.get_value("Clone").ok(),
+            recent: sub.get_value("Recent").ok(),
+            internal,
+            external,
+            extend,
+            clone,
+            internal_timestamp,
+            external_timestamp,
+            extend_timestamp,
+            clone_timestamp,
         });
     }
 
-    Ok(entries)
+    let mut orphaned: Vec<OrphanedConfigEntry> = config_entries
+        .into_iter()
+        .filter(|(config_id, _)| !referenced_config_ids.contains(config_id))
+        .map(|(config_id, (key_name, timestamp))| OrphanedConfigEntry { key_name, config_id, timestamp })
+        .collect();
+    orphaned.sort_by(|a, b| a.key_name.cmp(&b.key_name));
+
+    Ok((entries, orphaned))
 }

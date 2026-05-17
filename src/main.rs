@@ -10,6 +10,8 @@ use displayz::{
 };
 use std::time::{SystemTime, UNIX_EPOCH};
 use windows::Win32::Devices::Display::{QDC_ALL_PATHS, QDC_ONLY_ACTIVE_PATHS};
+use windows::Win32::Foundation::{FILETIME, SYSTEMTIME};
+use windows::Win32::System::Time::FileTimeToSystemTime;
 use structopt::{StructOpt, clap::ArgGroup};
 
 /// CLI arguments
@@ -100,6 +102,23 @@ enum TopologySubCommands {
     /// Show the full Windows display Connectivity database (requires admin)
     #[structopt(alias = "c")]
     Connectivity,
+}
+
+fn format_filetime(filetime: u64) -> String {
+    let ft = FILETIME {
+        dwLowDateTime: (filetime & 0xFFFF_FFFF) as u32,
+        dwHighDateTime: (filetime >> 32) as u32,
+    };
+    let mut st = SYSTEMTIME::default();
+    unsafe {
+        if FileTimeToSystemTime(&ft, &mut st).is_ok() {
+            return format!(
+                "{:04}-{:02}-{:02} {:02}:{:02}:{:02}",
+                st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond
+            );
+        }
+    }
+    format!("ts:{}", filetime)
 }
 
 fn format_time() -> String {
@@ -383,15 +402,11 @@ fn main() -> Result<()> {
                     })
                     .collect();
 
-                let entries = read_connectivity_database()?;
-                let mut shown = false;
+                let (entries, orphaned_configs) = read_connectivity_database()?;
+                if entries.is_empty() {
+                    println!("No connectivity entries found (try running as administrator).");
+                }
                 for entry in &entries {
-                    // Only show entries that have at least one topology stored
-                    if entry.available_topologies().is_empty() {
-                        continue;
-                    }
-                    shown = true;
-
                     // Check whether this entry belongs to the current display set
                     let prefixes = entry.monitor_prefixes();
                     let is_current = prefixes.len() == current_prefixes.len()
@@ -402,16 +417,48 @@ fn main() -> Result<()> {
                     let marker = if is_current { " [current set]" } else { "" };
                     println!("Display set:{}", marker);
                     println!("  Monitors:   {}", entry.set_id);
+                    println!("  Full key:   {}", entry.key_name);
 
                     let remembered = entry
                         .recent_topology()
                         .unwrap_or("Unknown");
                     println!("  Remembered: {}", remembered);
-                    println!("  Available:  {}", entry.available_topologies().join(", "));
+
+                    let topology_fields: &[(&str, &Option<String>, Option<u64>)] = &[
+                        ("Internal", &entry.internal, entry.internal_timestamp),
+                        ("External", &entry.external, entry.external_timestamp),
+                        ("Extend",   &entry.extend,   entry.extend_timestamp),
+                        ("Clone",    &entry.clone,    entry.clone_timestamp),
+                    ];
+                    let available: Vec<String> = topology_fields
+                        .iter()
+                        .filter(|(_, config_id, _)| config_id.is_some())
+                        .map(|(name, _, ts)| {
+                            if let Some(ts) = ts {
+                                format!("{} [{}]", name, format_filetime(*ts))
+                            } else {
+                                name.to_string()
+                            }
+                        })
+                        .collect();
+                    if available.is_empty() {
+                        println!("  Available:  (none)");
+                    } else {
+                        println!("  Available:  {}", available.join(", "));
+                    }
+                    if !entry.has_any_configuration_key() {
+                        println!("  Has configuration key: false");
+                    }
                     println!();
                 }
-                if !shown {
-                    println!("No connectivity entries found (try running as administrator).");
+
+                for orphan in &orphaned_configs {
+                    println!("Configuration entry:");
+                    println!("  Config ID:  {}", orphan.config_id);
+                    println!("  Full key:   {}", orphan.key_name);
+                    println!("  Timestamp:  {}", format_filetime(orphan.timestamp));
+                    println!("  Has connectivity key: false");
+                    println!();
                 }
             }
         },
