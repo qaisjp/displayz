@@ -101,7 +101,14 @@ enum TopologySubCommands {
     Stored,
     /// Show the full Windows display Connectivity database (requires admin)
     #[structopt(alias = "c")]
-    Connectivity,
+    Connectivity {
+        /// Include entries with no matching Configuration or Connectivity key
+        #[structopt(long)]
+        include_orphaned: bool,
+        /// Include entries with no stored topology data (Available: none)
+        #[structopt(long)]
+        include_empty: bool,
+    },
 }
 
 fn format_filetime(filetime: u64) -> String {
@@ -386,7 +393,7 @@ fn main() -> Result<()> {
                     }
                 }
             }
-            TopologySubCommands::Connectivity => {
+            TopologySubCommands::Connectivity { include_orphaned, include_empty } => {
                 // Get current monitor prefixes to identify the active display set
                 let all_displays = query_displays(
                     windows::Win32::Devices::Display::QDC_ALL_PATHS,
@@ -407,6 +414,10 @@ fn main() -> Result<()> {
                     println!("No connectivity entries found (try running as administrator).");
                 }
                 for entry in &entries {
+                    if !include_empty && entry.available_topologies().is_empty() {
+                        continue;
+                    }
+
                     // Check whether this entry belongs to the current display set
                     let prefixes = entry.monitor_prefixes();
                     let is_current = prefixes.len() == current_prefixes.len()
@@ -446,19 +457,21 @@ fn main() -> Result<()> {
                     } else {
                         println!("  Available:  {}", available.join(", "));
                     }
-                    if !entry.has_any_configuration_key() {
+                    if include_orphaned && !entry.has_any_configuration_key() {
                         println!("  Has configuration key: false");
                     }
                     println!();
                 }
 
-                for orphan in &orphaned_configs {
-                    println!("Configuration entry:");
-                    println!("  Config ID:  {}", orphan.config_id);
-                    println!("  Full key:   {}", orphan.key_name);
-                    println!("  Timestamp:  {}", format_filetime(orphan.timestamp));
-                    println!("  Has connectivity key: false");
-                    println!();
+                if include_orphaned {
+                    for orphan in &orphaned_configs {
+                        println!("Configuration entry:");
+                        println!("  Config ID:  {}", orphan.config_id);
+                        println!("  Full key:   {}", orphan.key_name);
+                        println!("  Timestamp:  {}", format_filetime(orphan.timestamp));
+                        println!("  Has connectivity key: false");
+                        println!();
+                    }
                 }
             }
         },
