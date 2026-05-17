@@ -7,6 +7,7 @@ use color_eyre::eyre::{Result, eyre};
 use displayz::{
     DisplaySettings, Frequency, Orientation, Position, Resolution, query_displays, refresh,
 };
+use windows::Win32::Devices::Display::{QDC_ALL_PATHS, QDC_ONLY_ACTIVE_PATHS};
 use structopt::{StructOpt, clap::ArgGroup};
 
 /// CLI arguments
@@ -37,6 +38,12 @@ enum SubCommands {
         #[cfg(feature = "json")]
         #[structopt(long)]
         json: bool,
+        /// Include inactive (disabled but connected) displays
+        #[structopt(long)]
+        include_inactive: bool,
+        /// Include all possible display paths (implies --include-inactive)
+        #[structopt(long)]
+        include_all: bool,
     },
     /// Sets the primary display
     #[structopt(alias = "sp")]
@@ -118,7 +125,20 @@ fn main() -> Result<()> {
 
     log::debug!("Parsed Opts:\n{:#?}", opts);
 
-    let display_set = query_displays()?;
+    let (qdc_flag, deduplicate) = match &opts.cmd {
+        SubCommands::Info { include_all, include_inactive, .. } => {
+            if *include_all {
+                (QDC_ALL_PATHS, false)
+            } else if *include_inactive {
+                (QDC_ALL_PATHS, true)
+            } else {
+                (QDC_ONLY_ACTIVE_PATHS, false)
+            }
+        }
+        _ => (QDC_ONLY_ACTIVE_PATHS, false),
+    };
+
+    let display_set = query_displays(qdc_flag, deduplicate)?;
     log::debug!("Discovered displays:\n{}", display_set);
 
     match opts.cmd {
@@ -126,6 +146,7 @@ fn main() -> Result<()> {
             id,
             #[cfg(feature = "json")]
             json,
+            ..
         } => {
             #[cfg(feature = "json")]
             let output_json = json;

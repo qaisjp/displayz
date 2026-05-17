@@ -177,37 +177,34 @@ impl DisplayProperties {
     ) -> Result<DisplayProperties> {
         let active = (path.flags & 0x00000001) != 0; // DISPLAYCONFIG_PATH_ACTIVE
 
-        // Get source and target mode indices
-        let source_mode_idx = unsafe { path.sourceInfo.Anonymous.modeInfoIdx as usize };
-        let target_mode_idx = unsafe { path.targetInfo.Anonymous.modeInfoIdx as usize };
-
-        if source_mode_idx >= modes.len() || target_mode_idx >= modes.len() {
-            return Err(DisplayPropertiesError::WinAPI(
-                "Invalid mode index in display path".to_string(),
-            ));
-        }
-
-        let source_mode = &modes[source_mode_idx];
-        let target_mode = &modes[target_mode_idx];
-
-        // Extract position from source mode
-        let position = unsafe { source_mode.Anonymous.sourceMode.position };
-
-        // Determine if primary (position == 0,0)
-        let is_primary = position.x == 0 && position.y == 0;
-
         // Get device names via DisplayConfigGetDeviceInfo
         let name = Self::get_source_device_name(path)?;
         let (string, key) = Self::get_target_device_info(path)?;
 
-        let settings = if active {
-            Some(RefCell::new(Self::fetch_settings_from_mode(
+        // Mode indices are only valid for active paths; inactive paths use DISPLAYCONFIG_PATH_MODE_IDX_INVALID (0xFFFFFFFF).
+        let (is_primary, settings) = if active {
+            let source_mode_idx = unsafe { path.sourceInfo.Anonymous.modeInfoIdx as usize };
+            let target_mode_idx = unsafe { path.targetInfo.Anonymous.modeInfoIdx as usize };
+
+            if source_mode_idx >= modes.len() || target_mode_idx >= modes.len() {
+                return Err(DisplayPropertiesError::WinAPI(
+                    "Invalid mode index in display path".to_string(),
+                ));
+            }
+
+            let source_mode = &modes[source_mode_idx];
+            let target_mode = &modes[target_mode_idx];
+
+            let position = unsafe { source_mode.Anonymous.sourceMode.position };
+            let is_primary = position.x == 0 && position.y == 0;
+            let settings = Some(RefCell::new(Self::fetch_settings_from_mode(
                 path,
                 source_mode,
                 target_mode,
-            )?))
+            )?));
+            (is_primary, settings)
         } else {
-            None
+            (false, None)
         };
 
         // Extract connector type

@@ -1,11 +1,13 @@
 use core::fmt;
 use std::cell::{Cell, RefCell};
+use std::collections::HashMap;
 
 use thiserror::Error;
 use windows::Win32::Devices::Display::{
-    DISPLAYCONFIG_MODE_INFO, DISPLAYCONFIG_PATH_INFO, GetDisplayConfigBufferSizes,
-    QDC_ONLY_ACTIVE_PATHS, QueryDisplayConfig, SDC_ALLOW_CHANGES, SDC_APPLY, SDC_SAVE_TO_DATABASE,
-    SDC_USE_SUPPLIED_DISPLAY_CONFIG, SetDisplayConfig,
+    DISPLAYCONFIG_MODE_INFO, DISPLAYCONFIG_PATH_INFO, DISPLAYCONFIG_TOPOLOGY_ID,
+    GetDisplayConfigBufferSizes, QDC_DATABASE_CURRENT, QDC_ONLY_ACTIVE_PATHS,
+    QUERY_DISPLAY_CONFIG_FLAGS, QueryDisplayConfig, SDC_ALLOW_CHANGES, SDC_APPLY,
+    SDC_SAVE_TO_DATABASE, SDC_USE_SUPPLIED_DISPLAY_CONFIG, SetDisplayConfig,
 };
 
 use crate::{
@@ -309,13 +311,13 @@ impl fmt::Display for DisplaySet {
 }
 
 /// Returns a list of all displays.
-pub fn query_displays() -> Result<DisplaySet> {
+pub fn query_displays(flags: QUERY_DISPLAY_CONFIG_FLAGS, deduplicate: bool) -> Result<DisplaySet> {
     let mut num_paths: u32 = 0;
     let mut num_modes: u32 = 0;
 
     // Step 1: Get buffer sizes
     unsafe {
-        GetDisplayConfigBufferSizes(QDC_ONLY_ACTIVE_PATHS, &mut num_paths, &mut num_modes)
+        GetDisplayConfigBufferSizes(flags, &mut num_paths, &mut num_modes)
             .ok()
             .map_err(|e| {
                 DisplayError::WinAPI(format!("GetDisplayConfigBufferSizes failed: {:?}", e))
@@ -328,14 +330,22 @@ pub fn query_displays() -> Result<DisplaySet> {
     let mut paths = vec![DISPLAYCONFIG_PATH_INFO::default(); num_paths as usize];
     let mut modes = vec![DISPLAYCONFIG_MODE_INFO::default(); num_modes as usize];
 
+    // QDC_DATABASE_CURRENT requires a non-null pCurrentTopologyId; all other flags require None.
+    let mut topology_id = DISPLAYCONFIG_TOPOLOGY_ID::default();
+    let p_topology_id = if flags == QDC_DATABASE_CURRENT {
+        Some(&mut topology_id as *mut DISPLAYCONFIG_TOPOLOGY_ID)
+    } else {
+        None
+    };
+
     unsafe {
         QueryDisplayConfig(
-            QDC_ONLY_ACTIVE_PATHS,
+            flags,
             &mut num_paths,
             paths.as_mut_ptr(),
             &mut num_modes,
             modes.as_mut_ptr(),
-            None,
+            p_topology_id,
         )
         .ok()
         .map_err(|e| DisplayError::WinAPI(format!("QueryDisplayConfig failed: {:?}", e)))?;
@@ -345,17 +355,38 @@ pub fn query_displays() -> Result<DisplaySet> {
     paths.truncate(num_paths as usize);
     modes.truncate(num_modes as usize);
 
+    // When deduplicating, keep one path per physical monitor (adapterId + targetId),
+    // preferring the active path so its settings are available.
+    if deduplicate {
+        let mut best: HashMap<(u32, i32, u32), usize> = HashMap::new();
+        for (i, path) in paths.iter().enumerate() {
+            let key = (
+                path.targetInfo.adapterId.LowPart,
+                path.targetInfo.adapterId.HighPart,
+                path.targetInfo.id,
+            );
+            let active = (path.flags & 0x00000001) != 0;
+            match best.entry(key) {
+                std::collections::hash_map::Entry::Vacant(e) => {
+                    e.insert(i);
+                }
+                std::collections::hash_map::Entry::Occupied(mut e) => {
+                    if active && (paths[*e.get()].flags & 0x00000001) == 0 {
+                        e.insert(i);
+                    }
+                }
+            }
+        }
+        let mut indices: Vec<usize> = best.into_values().collect();
+        indices.sort();
+        paths = indices.into_iter().map(|i| paths[i]).collect();
+    }
+
     // Step 3: Convert each path to DisplayProperties
     let mut result = Vec::<DisplayProperties>::new();
     let mut primary_index = 0;
 
     for (path_idx, path) in paths.iter().enumerate() {
-        // Skip inactive paths
-        if (path.flags & 0x00000001) == 0 {
-            // DISPLAYCONFIG_PATH_ACTIVE
-            continue;
-        }
-
         let properties = DisplayProperties::from_display_config(path, &modes)?;
 
         log::debug!(
