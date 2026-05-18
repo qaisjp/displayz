@@ -30,6 +30,7 @@ Observed behaviour:
     - This is the `(DEL^SNY)-Internal` displayset-topology
     - Turning the TV off (and waiting 10s) causes
         - the screen to go black for a second, and
+        - the displayset-topology **momentarily switches to** `(DEL)-Internal` for about 36 milliseconds (5ms polling rate using `watch -i 5`)
         - the displayset-topology **remains** at `(DEL^SNY)-Internal`
         - (somehow windows isn't forgetting the SNY screen? this is strange!)
     - Turning the TV on causes

@@ -152,14 +152,15 @@ fn format_filetime(filetime: u64) -> String {
 }
 
 fn format_time() -> String {
-    let secs = SystemTime::now()
+    let dur = SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs();
+        .unwrap_or_default();
+    let ms = dur.subsec_millis();
+    let secs = dur.as_secs();
     let s = secs % 60;
     let m = (secs / 60) % 60;
     let h = (secs / 3600) % 24;
-    format!("{:02}:{:02}:{:02}", h, m, s)
+    format!("{:02}:{:02}:{:02}.{:03}", h, m, s, ms)
 }
 
 /// Describes the properties that can be changed on a display
