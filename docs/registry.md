@@ -38,13 +38,15 @@ This is the most useful key for understanding automatic topology switching. It s
 
 ### Key naming
 
-Each subkey is named `<SetId>^<Hash>`, where `SetId` is the `^`-joined list of monitor IDs in the display set:
+Each subkey is named `<SetId>^<Hash>`, where `Hash` is the uppercase MD5 of `SetId` (UTF-8 encoded), and `SetId` is the `^`-joined list of monitor IDs in the display set:
 
 ```
 DEL430F6C19C34_34_07E8_46^SNY07CB16843009_01_07E7_C7^<Hash>
 ```
 
 The `^` separator here denotes set membership — it has no topology meaning.
+
+> **Theory:** Windows registry key names are capped at 255 characters. A SetId with many long monitor IDs joined by `^` could exceed this limit, causing the prefix to be truncated. Appending `^MD5(full_SetId)` lets Windows find the correct entry by hash even when the prefix is truncated. The `SetId` value stored *inside* each subkey is the authoritative full string, confirmed after the hash lookup.
 
 ### Values
 
@@ -94,7 +96,7 @@ Stores the actual display settings (resolution, refresh rate, position, pixel fo
 
 ### Key naming
 
-Each subkey is named `<ConfigId>^<Hash>`, where `ConfigId` encodes both the monitor set **and** the topology via its separator character:
+Each subkey is named `<ConfigId>^<Hash>`, where `Hash` is the uppercase MD5 of `ConfigId` (UTF-8 encoded), and `ConfigId` encodes both the monitor set **and** the topology via its separator character:
 
 | Separator | Topology |
 |-----------|----------|
@@ -109,6 +111,8 @@ SNY07CB16843009_01_07E7_C7^<Hash>                             — Sony only
 DEL430F6C19C34_34_07E8_46*SNY07CB16843009_01_07E7_C7^<Hash>  — Clone
 DEL430F6C19C34_34_07E8_46+SNY07CB16843009_01_07E7_C7^<Hash>  — Extend
 ```
+
+> **Theory:** Same as Connectivity — the hash guards against key name truncation at the 255-character registry limit, with the `SetId` value inside the subkey serving as the authoritative full string.
 
 ### Top-level values
 
