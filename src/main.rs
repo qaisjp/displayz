@@ -71,6 +71,12 @@ enum SubCommands {
         #[structopt(subcommand)]
         cmd: TopologySubCommands,
     },
+    /// Manage display sets (Windows Connectivity database)
+    #[structopt(name = "displayset", alias = "ds")]
+    DisplaySet {
+        #[structopt(subcommand)]
+        cmd: DisplaySetSubCommands,
+    },
     /// Changes settings of a display with a specified id
     #[structopt(alias = "props")]
     Properties {
@@ -99,9 +105,14 @@ enum TopologySubCommands {
     /// Show which topology modes are stored for the current display set
     #[structopt(alias = "st")]
     Stored,
-    /// Show the full Windows display Connectivity database (requires admin)
-    #[structopt(alias = "c")]
-    Connectivity {
+}
+
+/// Subcommands for display set management
+#[derive(StructOpt, Debug)]
+enum DisplaySetSubCommands {
+    /// List all entries in the Windows Connectivity database (requires admin)
+    #[structopt(alias = "l")]
+    List {
         /// Include entries with no matching Configuration or Connectivity key
         #[structopt(long)]
         include_orphaned: bool,
@@ -109,6 +120,9 @@ enum TopologySubCommands {
         #[structopt(long)]
         include_empty: bool,
     },
+    /// Print the full registry key of the current display set (requires admin)
+    #[structopt(alias = "c")]
+    Current,
 }
 
 fn format_filetime(filetime: u64) -> String {
@@ -367,14 +381,24 @@ fn main() -> Result<()> {
                 println!("Topology: {}", topology);
             }
             TopologySubCommands::Watch { interval } => {
-                let mut last = query_topology()?;
-                println!("[{}] Topology: {}", format_time(), last);
+                let active_display_strings = || -> Result<Vec<String>> {
+                    Ok(query_displays(QDC_ONLY_ACTIVE_PATHS, false)?
+                        .displays()
+                        .map(|d| d.string().to_string())
+                        .collect())
+                };
+
+                let mut last_topology = query_topology()?;
+                let mut last_displays = active_display_strings()?;
+                println!("[{}] Topology: {} | {}", format_time(), last_topology, last_displays.join(", "));
                 loop {
                     std::thread::sleep(std::time::Duration::from_millis(interval));
-                    let current = query_topology()?;
-                    if current != last {
-                        println!("[{}] Topology: {}", format_time(), current);
-                        last = current;
+                    let current_topology = query_topology()?;
+                    let current_displays = active_display_strings()?;
+                    if current_topology != last_topology || current_displays != last_displays {
+                        println!("[{}] Topology: {} | {}", format_time(), current_topology, current_displays.join(", "));
+                        last_topology = current_topology;
+                        last_displays = current_displays;
                     }
                 }
             }
@@ -393,7 +417,9 @@ fn main() -> Result<()> {
                     }
                 }
             }
-            TopologySubCommands::Connectivity { include_orphaned, include_empty } => {
+        },
+        SubCommands::DisplaySet { cmd } => match cmd {
+            DisplaySetSubCommands::List { include_orphaned, include_empty } => {
                 // Get current monitor prefixes to identify the active display set
                 let all_displays = query_displays(
                     windows::Win32::Devices::Display::QDC_ALL_PATHS,
@@ -401,6 +427,7 @@ fn main() -> Result<()> {
                 )?;
                 let current_prefixes: Vec<String> = all_displays
                     .displays()
+                    .filter(|d| d.target_available())
                     .filter_map(|d| {
                         // key looks like \\?\DISPLAY#DEL430F#...  extract the model code
                         let key = d.key();
@@ -482,6 +509,35 @@ fn main() -> Result<()> {
                         println!("  Has connectivity key: false");
                         println!();
                     }
+                }
+            }
+            DisplaySetSubCommands::Current => {
+                let all_displays = query_displays(
+                    windows::Win32::Devices::Display::QDC_ALL_PATHS,
+                    true,
+                )?;
+                let current_prefixes: Vec<String> = all_displays
+                    .displays()
+                    .filter(|d| d.target_available())
+                    .filter_map(|d| {
+                        let key = d.key();
+                        let after_display = key.split('#').nth(1)?;
+                        Some(after_display.to_string())
+                    })
+                    .collect();
+
+                let (entries, _) = read_connectivity_database()?;
+                let current = entries.iter().find(|entry| {
+                    let prefixes = entry.monitor_prefixes();
+                    prefixes.len() == current_prefixes.len()
+                        && prefixes.iter().all(|p| {
+                            current_prefixes.iter().any(|c| c.starts_with(p) || p.starts_with(c.as_str()))
+                        })
+                });
+
+                match current {
+                    Some(entry) => println!("{}", entry.key_name),
+                    None => println!("No matching display set found."),
                 }
             }
         },
