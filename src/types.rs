@@ -436,6 +436,19 @@ pub enum Topology {
     Unknown(i32),
 }
 
+impl Topology {
+    /// Returns the registry value name used in the Connectivity key, if applicable.
+    pub fn as_registry_value(&self) -> Option<&'static str> {
+        match self {
+            Topology::Internal   => Some("Internal"),
+            Topology::External   => Some("External"),
+            Topology::Extend     => Some("eXtend"),
+            Topology::Clone      => Some("Clone"),
+            Topology::Unknown(_) => None,
+        }
+    }
+}
+
 impl fmt::Display for Topology {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {

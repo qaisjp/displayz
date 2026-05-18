@@ -601,13 +601,9 @@ pub fn set_connectivity_recent(key_name: &str, topology: &crate::Topology) -> Re
     use winreg::RegKey;
     use winreg::enums::{HKEY_LOCAL_MACHINE, KEY_READ, KEY_WRITE};
 
-    let value_name = match topology {
-        crate::Topology::Internal => "Internal",
-        crate::Topology::External => "External",
-        crate::Topology::Extend   => "eXtend",
-        crate::Topology::Clone    => "Clone",
-        crate::Topology::Unknown(_) => return Err(DisplayError::WinAPI("Cannot set Recent to Unknown topology".to_string())),
-    };
+    let value_name = topology
+        .as_registry_value()
+        .ok_or_else(|| DisplayError::WinAPI("Cannot set Recent to Unknown topology".to_string()))?;
 
     let hklm = RegKey::predef(HKEY_LOCAL_MACHINE);
     let connectivity = hklm
