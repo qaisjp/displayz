@@ -427,7 +427,7 @@ impl fmt::Display for ConnectorType {
 }
 
 /// The active display topology
-#[derive(PartialEq)]
+#[derive(PartialEq, Debug)]
 pub enum Topology {
     Internal,
     Clone,
@@ -441,9 +441,29 @@ impl fmt::Display for Topology {
         match self {
             Topology::Internal    => write!(f, "Internal"),
             Topology::Clone       => write!(f, "Clone"),
-            Topology::Extend      => write!(f, "Extend"),
+            Topology::Extend      => write!(f, "eXtend"),
             Topology::External    => write!(f, "External"),
             Topology::Unknown(v)  => write!(f, "Unknown({})", v),
+        }
+    }
+}
+
+#[derive(Error, Debug)]
+pub enum ParseTopologyError {
+    #[error("Unknown topology '{0}'; expected Internal, External, eXtend, or Clone")]
+    Unknown(String),
+}
+
+impl FromStr for Topology {
+    type Err = ParseTopologyError;
+
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        match s.to_lowercase().as_str() {
+            "internal" => Ok(Topology::Internal),
+            "external" => Ok(Topology::External),
+            "extend"   => Ok(Topology::Extend),
+            "clone"    => Ok(Topology::Clone),
+            _          => Err(ParseTopologyError::Unknown(s.to_string())),
         }
     }
 }

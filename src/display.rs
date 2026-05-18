@@ -595,6 +595,42 @@ pub struct OrphanedConfigEntry {
     pub timestamp: u64,
 }
 
+/// Sets the `Recent` value in a Connectivity entry to the config ID stored for `topology`.
+/// Both `key_name` and the topology value must already exist.
+pub fn set_connectivity_recent(key_name: &str, topology: &crate::Topology) -> Result {
+    use winreg::RegKey;
+    use winreg::enums::{HKEY_LOCAL_MACHINE, KEY_READ, KEY_WRITE};
+
+    let value_name = match topology {
+        crate::Topology::Internal => "Internal",
+        crate::Topology::External => "External",
+        crate::Topology::Extend   => "eXtend",
+        crate::Topology::Clone    => "Clone",
+        crate::Topology::Unknown(_) => return Err(DisplayError::WinAPI("Cannot set Recent to Unknown topology".to_string())),
+    };
+
+    let hklm = RegKey::predef(HKEY_LOCAL_MACHINE);
+    let connectivity = hklm
+        .open_subkey_with_flags(
+            r"SYSTEM\CurrentControlSet\Control\GraphicsDrivers\Connectivity",
+            KEY_READ | KEY_WRITE,
+        )
+        .map_err(|e| DisplayError::WinAPI(format!("Cannot open Connectivity key (run as administrator): {}", e)))?;
+
+    let sub = connectivity
+        .open_subkey_with_flags(key_name, KEY_READ | KEY_WRITE)
+        .map_err(|e| DisplayError::WinAPI(format!("Key '{}' not found: {}", key_name, e)))?;
+
+    let config_id: String = sub
+        .get_value(value_name)
+        .map_err(|e| DisplayError::WinAPI(format!("Topology '{}' has no stored value in this entry: {}", topology, e)))?;
+
+    sub.set_value("Recent", &config_id)
+        .map_err(|e| DisplayError::WinAPI(format!("Failed to write Recent: {}", e)))?;
+
+    Ok(())
+}
+
 /// Reads all Configuration registry entries as config_id → (full_key_name, timestamp).
 fn read_config_entries() -> HashMap<String, (String, u64)> {
     use winreg::RegKey;

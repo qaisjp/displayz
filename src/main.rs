@@ -7,6 +7,7 @@ use color_eyre::eyre::{Result, eyre};
 use displayz::{
     DisplaySettings, Frequency, Orientation, Position, Resolution, query_displays,
     query_stored_topologies, query_topology, read_connectivity_database, refresh,
+    set_connectivity_recent,
 };
 use std::time::{SystemTime, UNIX_EPOCH};
 use windows::Win32::Devices::Display::{QDC_ALL_PATHS, QDC_ONLY_ACTIVE_PATHS};
@@ -105,6 +106,14 @@ enum TopologySubCommands {
     /// Show which topology modes are stored for the current display set
     #[structopt(alias = "st")]
     Stored,
+    /// Set the remembered topology for a display set (requires admin)
+    #[structopt(name = "set-recent")]
+    SetRecent {
+        /// Full registry key name (from `displayset list` or `displayset current`)
+        key: String,
+        /// Topology to remember: Internal, External, Extend, or Clone
+        topology: displayz::Topology,
+    },
 }
 
 /// Subcommands for display set management
@@ -395,6 +404,11 @@ fn main() -> Result<()> {
                     }
                 }
             }
+            TopologySubCommands::SetRecent { key, topology } => {
+                set_connectivity_recent(&key, &topology)?;
+                println!("Set Recent to {} for {}", topology, key);
+            }
+
         },
         SubCommands::DisplaySet { cmd } => match cmd {
             DisplaySetSubCommands::List { include_orphaned, include_empty } => {
