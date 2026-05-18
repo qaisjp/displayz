@@ -77,6 +77,13 @@ enum SubCommands {
         #[structopt(subcommand)]
         cmd: DisplaySetSubCommands,
     },
+    /// Watch for topology or display set changes (requires admin)
+    #[structopt(alias = "w")]
+    Watch {
+        /// Poll interval in milliseconds
+        #[structopt(short, long, default_value = "500")]
+        interval: u64,
+    },
     /// Changes settings of a display with a specified id
     #[structopt(alias = "props")]
     Properties {
@@ -95,13 +102,6 @@ enum TopologySubCommands {
     /// Show the current topology
     #[structopt(alias = "s")]
     Show,
-    /// Watch for topology changes and print them as they occur
-    #[structopt(alias = "w")]
-    Watch {
-        /// Poll interval in milliseconds
-        #[structopt(short, long, default_value = "500")]
-        interval: u64,
-    },
     /// Show which topology modes are stored for the current display set
     #[structopt(alias = "st")]
     Stored,
@@ -380,28 +380,6 @@ fn main() -> Result<()> {
                 let topology = query_topology()?;
                 println!("Topology: {}", topology);
             }
-            TopologySubCommands::Watch { interval } => {
-                let active_display_strings = || -> Result<Vec<String>> {
-                    Ok(query_displays(QDC_ONLY_ACTIVE_PATHS, false)?
-                        .displays()
-                        .map(|d| d.string().to_string())
-                        .collect())
-                };
-
-                let mut last_topology = query_topology()?;
-                let mut last_displays = active_display_strings()?;
-                println!("[{}] Topology: {} | {}", format_time(), last_topology, last_displays.join(", "));
-                loop {
-                    std::thread::sleep(std::time::Duration::from_millis(interval));
-                    let current_topology = query_topology()?;
-                    let current_displays = active_display_strings()?;
-                    if current_topology != last_topology || current_displays != last_displays {
-                        println!("[{}] Topology: {} | {}", format_time(), current_topology, current_displays.join(", "));
-                        last_topology = current_topology;
-                        last_displays = current_displays;
-                    }
-                }
-            }
             TopologySubCommands::Stored => {
                 let topologies = query_stored_topologies()?;
                 if topologies.is_empty() {
@@ -541,6 +519,52 @@ fn main() -> Result<()> {
                 }
             }
         },
+        SubCommands::Watch { interval } => {
+            let current_state = || -> Result<(String, String)> {
+                let topology = format!("{}", query_topology()?);
+
+                let all_displays = query_displays(
+                    windows::Win32::Devices::Display::QDC_ALL_PATHS,
+                    true,
+                )?;
+                let current_prefixes: Vec<String> = all_displays
+                    .displays()
+                    .filter(|d| d.target_available())
+                    .filter_map(|d| {
+                        let key = d.key();
+                        let after_display = key.split('#').nth(1)?;
+                        Some(after_display.to_string())
+                    })
+                    .collect();
+
+                let (entries, _) = read_connectivity_database()?;
+                let displayset_key = entries
+                    .iter()
+                    .find(|entry| {
+                        let prefixes = entry.monitor_prefixes();
+                        prefixes.len() == current_prefixes.len()
+                            && prefixes.iter().all(|p| {
+                                current_prefixes.iter().any(|c| c.starts_with(p) || p.starts_with(c.as_str()))
+                            })
+                    })
+                    .map(|e| e.key_name.clone())
+                    .unwrap_or_else(|| "(none)".to_string());
+
+                Ok((topology, displayset_key))
+            };
+
+            let (mut last_topology, mut last_displayset) = current_state()?;
+            println!("[{}] Topology: {} | {}", format_time(), last_topology, last_displayset);
+            loop {
+                std::thread::sleep(std::time::Duration::from_millis(interval));
+                let (topology, displayset) = current_state()?;
+                if topology != last_topology || displayset != last_displayset {
+                    println!("[{}] Topology: {} | {}", format_time(), topology, displayset);
+                    last_topology = topology;
+                    last_displayset = displayset;
+                }
+            }
+        }
     }
 
     Ok(())
