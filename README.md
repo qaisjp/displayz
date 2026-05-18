@@ -55,3 +55,17 @@ The `<properties>` argument can be multiple (but at least one and max one per ki
 ### Rust Library
 
 See the examples in the [examples/](examples/) folder and the [documentation](https://docs.rs/displayz/latest/displayz/) on how to use the library.
+
+### Development
+
+To run the local copy (`display watch --help`)
+
+```
+cargo r -- watch --help
+```
+
+To install the local copy globally:
+
+```sh
+cargo install --bin displayz --path .
+```
